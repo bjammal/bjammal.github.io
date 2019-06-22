@@ -4,8 +4,8 @@ tags: kubernetes authentication
 title: "Kubernetes Cluster Access: Authenticate and Authorize an External User"
 ---
 
-
 ## Overview
+
 Creating a Kubernetes cluster on baremetal (e.g. using tools like kubeadm) consists of an initialization command followed by creating some directories and copying some files. When successfully completed, your CLI client *kubectl* used to interact with the cluster is auto-magically configured and ready to connect to the cluster. If you use managed clusters on public cloud, configuring *kubectl* is usually a one command. Behind the scenes of this configuration a lot of work is done.  
 `kubectl` is a CLI client that can be used to manage multiple k8s clusters. Commands are sent as API requests to the cluster API server, which authenticates and authorizes them before passing them to the controller responsible of handling the kind of received request.   
 
