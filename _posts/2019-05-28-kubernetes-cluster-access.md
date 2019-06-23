@@ -4,14 +4,15 @@ tags: kubernetes authentication
 title: "Kubernetes Cluster Access: Authenticate and Authorize an External User"
 ---
 
-Creating a Kubernetes cluster on baremetal (e.g. using tools like kubeadm) consists of an initialization command followed by creating some directories and copying some files. When successfully completed, your CLI client *kubectl* used to interact with the cluster is auto-magically configured and ready to connect to the cluster. If you use managed clusters on public cloud, configuring *kubectl* is usually a one command. Behind the scenes of this configuration a lot of work is done.  
+Creating a Kubernetes cluster on baremetal (e.g. using tools like kubeadm) consists of an initialization command followed by creating some directories and copying some files. When successfully completed, your CLI client *kubectl* used to interact with the cluster is auto-magically configured and ready to connect to the cluster. If you use managed clusters on public cloud, configuring *kubectl* is usually a single command. Behind the scenes of this configuration a lot of work is done.  
+
 `kubectl` is a CLI client that can be used to manage multiple k8s clusters. Commands are sent as API requests to the cluster API server, which authenticates and authorizes them before passing them to the controller responsible of handling the kind of received request.   
 
-In this post, we will explore the details of how `kubectl` commands are authenticated. We will also create a new external user and authorize its access to the cluster using RBAC. The commands output is based on a minikube  installation. The values in your output will be slightly different if you are using a baremetal or a managed k8s cluster.
+In this post, we will explore the details of how `kubectl` commands are authenticated. We will also create a new external user and authorize its access to the cluster using RBAC. *The commands output is based on a minikube  installation. The values in your output will be slightly different if you are using a baremetal or a managed k8s cluster.*
 
 ---
 
-`Kubectl` is configured using a configuration file, known as *kubeconfig*, which contains an element called context \[1][2]. The *context* is defined by three parameters:
+`Kubectl` uses a configuration file, known as *kubeconfig*, which contains an element called *context* \[1][2]. The *context* is defined by three parameters:
 
 - **cluster name** of the cluster to be used
 - **namespace (optional)** can be used to limit the cluster's access to a particular namespace
@@ -21,7 +22,7 @@ When the cluster's API server receives a request, the request's user - defined i
 
 > Users in Kubernetes can be of two types: end or normal users managed outside Kubernetes (we will call them external), and service account users managed by Kubernetes API [3].
 
-Clusters initialization scripts like `kubeadm` write (or instruct you to place) the kubeconfig file in a subdirectory (more precisely  `.kube` directory) of the home directory of the logged in user on the master node where the script was launched. By default, `kubectl` looks for its config file in this specific subdirectory of the logged user. Therefore, the config file must be copied to the home directory of each user who needs to access the cluster. Those scripts also define a default user to access the cluster.  
+Clusters initialization scripts like `kubeadm` write (or instruct you to place) the kubeconfig file in a subdirectory (more precisely  `.kube` directory) of the home directory of the logged in user on the master node where the script was launched. By default, `kubectl` looks for its config file in this specific subdirectory of the logged user. Therefore, the config file must be copied to the home directory of each Linux/system user who needs to access the cluster. Those scripts also define a default user to access the cluster.  
 
 > Do not confuse the user that k8s authenticates and is defined in the context with the user used by kubectl to locate kubeconfig. They may or may not be the same.
 
@@ -143,7 +144,9 @@ users:
 ```
 
 This command is the equivalent of displaying the kubeconfig file with `cat ~/.kube/config`. The above output is from a minikube installation. If you are using any other type of installation the output must be similar with different values. `$HOME` will be replaced with the absolute path to your home directory.  
+
 Note the name of the cluster for later use, that is `minikube` in our case (see the line with a comment). You can also copy/backup this file if you want to refer to in later.  
+
 To add the user credentials and define a new context, enter the following commands.
 
 ```shell
@@ -219,6 +222,7 @@ users:
 
 First, we will create a role called *dbuser* in the *databases* namespace we defined earlier in the context. We will assign full capabilities (all operations) on *deployments*, *replicasets*, and *pods*. Create a file in your working directory with the following content. Let's say I named this file *dbrole.yaml*.
 
+
 ```yaml
 kind: Role
 apiVersion: rbac.authorization.k8s.io/v1beta1
@@ -259,7 +263,6 @@ Now if you test again with `kubectl --context=DB-context get pods`, you should n
 # Create a deployment of mongoDB
 $ kubectl run mongo --image=mongo --context=DB-context -n databases
 deployment.apps/mongo created
-
 # List all deployments in the namespace
 $ kubectl get deployments --context=DB-context -n databases
 NAME    READY   UP-TO-DATE   AVAILABLE   AGE
@@ -270,6 +273,8 @@ $ kubectl get pods --context=DB-context -n databases
 NAME                     READY   STATUS    RESTARTS   AGE
 mongo-845fdc5c7b-2x7zz   1/1     Running   0          2m37s
 ```
+
+### Summary
 We have successfully configured an additional external user to access a Kubernetes cluster. Setting a context and a user in kubeconfig allows the user to get authenticated but does not give the user any permission on the cluster. An additional step of creating RBAC objects (role and role binding) was required to assign the appropriate permissions. For the curious, you can play around with the verbs of the role, add more namespaces, etc.
 
 ### References  
