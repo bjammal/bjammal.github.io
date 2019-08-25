@@ -30,7 +30,7 @@ The first and easiest way to get more information about the API that k8s exposes
 - in a REST path (URL) following the pattern `/apis/$GROUP_NAME/$VERSION`
 - in an `apiVersion` field of a serialized object (YAML manifest files are serialized to JSON as we will see later) following the pattern `$GROUP_NAME/$VERSION`
 
-> k8s [documentation](https://kubernetes.io/docs/reference/using-api/api-overview/): "The named groups are at REST path `/apis/$GROUP_NAME/$VERSION`, and use `apiVersion: $GROUP_NAME/$VERSION` (for example, `apiVersion: batch/v1`).""
+> k8s [documentation](https://kubernetes.io/docs/reference/using-api/api-overview/): "The named groups are at REST path `/apis/$GROUP_NAME/$VERSION`, and use `apiVersion: $GROUP_NAME/$VERSION` (for example, `apiVersion: batch/v1`)."
 
 If you examine the output of the previous `curl` command, you can see a list of groups started by the key "groups".
 
