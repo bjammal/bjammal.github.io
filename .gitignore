@@ -3,6 +3,7 @@ _site
 _drafts
 .sass-cache
 .vagrant
+img/*.drawio
 
 # general
 .DS_Store

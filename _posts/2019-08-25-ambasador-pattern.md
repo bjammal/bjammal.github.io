@@ -5,9 +5,7 @@ title: Hands-On Ambassador Pattern
 
 ---
 
-In Brendan Burns' *Designing Distributed Systems* book, he gives an example on using the *ambassador pattern* for an experimentation case. The example is about request splitting, meaning distributing the request load between two versions of an application aiming at ensuring the proper functionality of the newer version by testing it under production workload. Although very useful, the hands-on only focuses on the pattern itself and provides the configuration of ambassador.
-
-I wanted to try it myself. So, in this post I am complementing the example in the book with a simple client/server application and sharing with you the deployment and configuration I have done to experiment with this pattern. 
+In Brendan Burns' *Designing Distributed Systems* book, he gives an example on using the *ambassador pattern* for an experimentation case. The example shows a request splitting use case: distributing the request load between two versions of an application to ensure the proper functionality of the newer version under production workload. The hands-on only focuses on the pattern itself and provides the configuration of ambassador. I wanted to try it myself. So, in this post I am complementing the example in the book with a simple client/server application and sharing with you the deployment and configuration I have done to experiment with this pattern. 
 
 ### A Recap on Ambassador Pattern
 
