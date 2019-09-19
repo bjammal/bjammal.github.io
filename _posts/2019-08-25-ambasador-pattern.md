@@ -2,6 +2,7 @@
 
 layout: post
 title: Hands-On Ambassador Pattern
+tags: kubernetes, Ambassador, Design Pattern
 
 ---
 
