@@ -74,7 +74,6 @@ user@k8s-master$ curl https://127.0.0.1:6443/apis -k
 
 Note that even if the API server is exposed over HTTPS, we were able to bypass the server certificate verification (i.e with the `curl` -k flag).
 
-"version": "v1beta1"
 So, if you need to get more information about the set of endpoints that a specific group includes, you can issue the same previous `curl` command with the appropriate URL path. For instance, to see what the `v1beta1` version of the `extensions` group contains:
 
 ```shell
@@ -125,7 +124,7 @@ user@k8s-master$ curl https://127.0.0.1:6443/apis/extensions/v1beta1 -k
 ... output omitted ...
 ```
 
-This is one of the essential and most used groups of the API. Here you can see resources endpoints like DaemonSet , Deployment, Ingress, ReplicaSet, and so on. Navigate through the different groups and resources, check their names, the associated actions, short names, and other information as you like.
+This is currently one of the most important and used groups of the API. Here you can see resources endpoints like DaemonSet , Deployment, Ingress, ReplicaSet, and so on. Navigate through the different groups and resources, check their names, the associated actions, short names, and other information as you like.
 
 
 
