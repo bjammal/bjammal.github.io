@@ -22,7 +22,7 @@ For more details and explanation refer to the article.
 
 The setup we will use to demonstrate the pattern is illustrated here:
 
-![](/home/bilal/Repositories/github/bjammal.github.io/img/ambassador-pattern.png)
+![](../images/ambassador-pattern.png)
 
 - We have two versions of an application, each deployed in a Kubernetes pod.
 - The client application is deployed as a container and shares the same pod with the ambassador container so that the former always has one single connection endpoint through localhost.

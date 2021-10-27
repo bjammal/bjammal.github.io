@@ -1,0 +1,259 @@
+I"�T<p>In Brendan Burns’ <em>Designing Distributed Systems</em> book, he gives an example on using the <em>ambassador pattern</em> for an experimentation case. The example shows a request splitting use case: distributing the request load between two versions of an application to ensure the proper functionality of the newer version under production workload. The hands-on only focuses on the pattern itself and provides the configuration of ambassador. I wanted to try it myself. So, in this post I am complementing the example in the book with a simple client/server application and sharing with you the deployment and configuration I have done to experiment with this pattern.</p>
+
+<h3 id="a-recap-on-ambassador-pattern">A Recap on Ambassador Pattern</h3>
+
+<p>Using Ambassador Pattern, “an ambassador container brokers interactions between the application container and the rest of the world” [Brendan Burns, Designing Distributed Systems]. There are many use cases for this pattern. For instance, we can use it as a proxy to hide the complexity of communication with external services. An application would only care about one single connection to localhost on a specific port (provided by the ambassador), regardless of the type or number of data exchange that happen beyond this point. This modular system design allows us to keep the main application code simple, and to build a generic ambassador that can be reused with other applications as well.</p>
+
+<p><a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/ambassador">Microsoft’s article</a> explaining the pattern represents it with the following schema:</p>
+
+<p><img src="https://docs.microsoft.com/en-us/azure/architecture/patterns/_images/ambassador.png" alt="Diagram of the Ambassador pattern" /></p>
+
+<p>For more details and explanation refer to the article.</p>
+
+<h3 id="setup-overview">Setup Overview</h3>
+
+<p>The setup we will use to demonstrate the pattern is illustrated here:</p>
+
+<p><img src="../images/ambassador-pattern.png" alt="" /></p>
+
+<ul>
+  <li>We have two versions of an application, each deployed in a Kubernetes pod.</li>
+  <li>The client application is deployed as a container and shares the same pod with the ambassador container so that the former always has one single connection endpoint through localhost.</li>
+  <li>The ambassador pattern receives the client requests and proxies them to v1 and v2beta servers and returns the response back to the client.</li>
+</ul>
+
+<h3 id="deploying-the-main-application">Deploying the Main Application</h3>
+
+<p>Before using an ambassador we need to have the main application’s service ready. In this example, I will use an nginx web server. I will consider that v1 is a production service and v2beta is an experiment service.</p>
+
+<p>To keep it simple, the only difference between the two versions is the h1 header in the body of the index.html home page. In the production service it is going to be <code class="language-plaintext highlighter-rouge">&lt;h1&gt;This is your NGINX Production&lt;/h1&gt;</code> and in the experiment service we will have <code class="language-plaintext highlighter-rouge">&lt;h1&gt;This is your NGINX Experiment&lt;/h1&gt;</code>. So, the first thing is to create those two index pages that we will inject later in our nginx pods via a ConfigMap.</p>
+
+<p>Create the experiment index file <code class="language-plaintext highlighter-rouge">nginx-experiment.html</code>:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;!DOCTYPE html&gt;</span>
+<span class="nt">&lt;html&gt;</span>
+<span class="nt">&lt;head&gt;</span>
+<span class="nt">&lt;title&gt;</span>Welcome to nginx!<span class="nt">&lt;/title&gt;</span>
+<span class="nt">&lt;style&gt;</span>
+    <span class="nt">body</span> <span class="p">{</span>
+        <span class="nl">width</span><span class="p">:</span> <span class="m">35em</span><span class="p">;</span>
+        <span class="nl">margin</span><span class="p">:</span> <span class="m">0</span> <span class="nb">auto</span><span class="p">;</span>
+        <span class="nl">font-family</span><span class="p">:</span> <span class="n">Tahoma</span><span class="p">,</span> <span class="n">Verdana</span><span class="p">,</span> <span class="n">Arial</span><span class="p">,</span> <span class="nb">sans-serif</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="nt">&lt;/style&gt;</span>
+<span class="nt">&lt;/head&gt;</span>
+<span class="nt">&lt;body&gt;</span>
+<span class="nt">&lt;h1&gt;</span>This is your NGINX Experiment<span class="nt">&lt;/h1&gt;</span>
+<span class="nt">&lt;/body&gt;</span>
+<span class="nt">&lt;/html&gt;</span>
+</code></pre></div></div>
+
+<p>Create the production index file <code class="language-plaintext highlighter-rouge">nginx-production.html</code>:</p>
+
+<div class="language-html highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;!DOCTYPE html&gt;</span>
+<span class="nt">&lt;html&gt;</span>
+<span class="nt">&lt;head&gt;</span>
+<span class="nt">&lt;title&gt;</span>Welcome to nginx!<span class="nt">&lt;/title&gt;</span>
+<span class="nt">&lt;style&gt;</span>
+    <span class="nt">body</span> <span class="p">{</span>
+        <span class="nl">width</span><span class="p">:</span> <span class="m">35em</span><span class="p">;</span>
+        <span class="nl">margin</span><span class="p">:</span> <span class="m">0</span> <span class="nb">auto</span><span class="p">;</span>
+        <span class="nl">font-family</span><span class="p">:</span> <span class="n">Tahoma</span><span class="p">,</span> <span class="n">Verdana</span><span class="p">,</span> <span class="n">Arial</span><span class="p">,</span> <span class="nb">sans-serif</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="nt">&lt;/style&gt;</span>
+<span class="nt">&lt;/head&gt;</span>
+<span class="nt">&lt;body&gt;</span>
+<span class="nt">&lt;h1&gt;</span>This is your NGINX Production<span class="nt">&lt;/h1&gt;</span>
+<span class="nt">&lt;/body&gt;</span>
+<span class="nt">&lt;/html&gt;</span>
+</code></pre></div></div>
+
+<p>Create the two ConfigMaps using the following commands:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># create the experiment configmap</span>
+<span class="nv">$ </span>kubectl create configmap nginx-exp <span class="nt">--from-file</span> nginx-experiment.html
+<span class="c"># create the production configmap</span>
+<span class="nv">$ </span>kubectl create configmap nginx-prod <span class="nt">--from-file</span> nginx-production.html
+</code></pre></div></div>
+
+<p>We are using a ConfigMap with <code class="language-plaintext highlighter-rouge">--from-file</code> flag. In this way, the name of the file will become a key in the configmap, and we can then use a volume mounting inside the pod to have this file at the mounting path.</p>
+
+<p>Next, you can deploy the two nginx servers using a Deployment. To do this, first create the deployment file <code class="language-plaintext highlighter-rouge">nginx-dep.yaml</code> as follows:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">apiVersion</span><span class="pi">:</span> <span class="s">apps/v1</span> 
+<span class="na">kind</span><span class="pi">:</span> <span class="s">Deployment</span>
+<span class="na">metadata</span><span class="pi">:</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">nginx-prod</span>
+<span class="na">spec</span><span class="pi">:</span>
+  <span class="na">selector</span><span class="pi">:</span>
+    <span class="na">matchLabels</span><span class="pi">:</span>
+      <span class="na">app</span><span class="pi">:</span> <span class="s">nginx-prod</span>
+  <span class="na">replicas</span><span class="pi">:</span> <span class="s">1</span> 
+  <span class="na">template</span><span class="pi">:</span>
+    <span class="na">metadata</span><span class="pi">:</span>
+      <span class="na">labels</span><span class="pi">:</span>
+        <span class="na">app</span><span class="pi">:</span> <span class="s">nginx-prod</span>
+    <span class="na">spec</span><span class="pi">:</span>
+      <span class="na">containers</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">nginx</span>
+        <span class="na">image</span><span class="pi">:</span> <span class="s">nginx:1.7.9</span>
+        <span class="na">ports</span><span class="pi">:</span>
+        <span class="pi">-</span> <span class="na">containerPort</span><span class="pi">:</span> <span class="m">80</span>
+        <span class="na">volumeMounts</span><span class="pi">:</span>
+        <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">index</span>
+          <span class="na">mountPath</span><span class="pi">:</span> <span class="s">/usr/share/nginx/html</span>
+      <span class="na">volumes</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">index</span>
+        <span class="na">configMap</span><span class="pi">:</span>
+          <span class="na">name</span><span class="pi">:</span> <span class="s">nginx-prod</span>
+          <span class="na">items</span><span class="pi">:</span>
+          <span class="pi">-</span> <span class="na">key</span><span class="pi">:</span> <span class="s">nginx-production.html</span>
+            <span class="na">path</span><span class="pi">:</span> <span class="s">index.html</span>
+<span class="nn">---</span>
+<span class="na">apiVersion</span><span class="pi">:</span> <span class="s">apps/v1</span>
+<span class="na">kind</span><span class="pi">:</span> <span class="s">Deployment</span>
+<span class="na">metadata</span><span class="pi">:</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">nginx-exp</span>
+<span class="na">spec</span><span class="pi">:</span>
+  <span class="na">selector</span><span class="pi">:</span>
+    <span class="na">matchLabels</span><span class="pi">:</span>
+      <span class="na">app</span><span class="pi">:</span> <span class="s">nginx-exp</span>
+  <span class="na">replicas</span><span class="pi">:</span> <span class="m">1</span>
+  <span class="na">template</span><span class="pi">:</span>
+    <span class="na">metadata</span><span class="pi">:</span>
+      <span class="na">labels</span><span class="pi">:</span>
+        <span class="na">app</span><span class="pi">:</span> <span class="s">nginx-exp</span>
+    <span class="na">spec</span><span class="pi">:</span>
+      <span class="na">containers</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">nginx</span>
+        <span class="na">image</span><span class="pi">:</span> <span class="s">nginx:1.7.9</span>
+        <span class="na">ports</span><span class="pi">:</span>
+        <span class="pi">-</span> <span class="na">containerPort</span><span class="pi">:</span> <span class="m">80</span>
+        <span class="na">volumeMounts</span><span class="pi">:</span>
+        <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">index</span>
+          <span class="na">mountPath</span><span class="pi">:</span> <span class="s">/usr/share/nginx/html</span>
+      <span class="na">volumes</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">index</span>
+        <span class="na">configMap</span><span class="pi">:</span>
+          <span class="na">name</span><span class="pi">:</span> <span class="s">nginx-exp</span>
+          <span class="na">items</span><span class="pi">:</span>
+          <span class="pi">-</span> <span class="na">key</span><span class="pi">:</span> <span class="s">nginx-experiment.html</span>
+            <span class="na">path</span><span class="pi">:</span> <span class="s">index.html</span>
+</code></pre></div></div>
+
+<p>The  default location of the index page in the official nginx docker image is <code class="language-plaintext highlighter-rouge">/usr/share/nginx/html</code> so this is where we want our <code class="language-plaintext highlighter-rouge">mountPath</code> to be. The second thing to notice is that using the <code class="language-plaintext highlighter-rouge">path</code> element in the configMap volume we are changing the name of the file which takes its value by default from the configMap’s key to <code class="language-plaintext highlighter-rouge">index.html</code>.</p>
+
+<p>Create the deployments with the command <code class="language-plaintext highlighter-rouge">kubectl create -f nginx-dep.yaml</code>.</p>
+
+<p>The final step is to create the services that expose the pods and, most importantly, create DNS names for the production and experiment application servers. We need the DNS names so we can use them later in the ambassador configuration to proxy requests. You can do this from the command line or by creating manifest files and using the <code class="language-plaintext highlighter-rouge">kubectl create -f</code> command. I will choose the former way because it is faster:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># create the experiment service</span>
+<span class="nv">$ </span> kubectl expose deploy nginx-exp <span class="nt">--port</span> 80 <span class="nt">--protocol</span> <span class="s2">"TCP"</span>
+<span class="c"># create the production service</span>
+<span class="nv">$ </span> kubectl expose deploy nginx-prod <span class="nt">--port</span> 80 <span class="nt">--protocol</span> <span class="s2">"TCP"</span>
+</code></pre></div></div>
+
+<p>At this point, the two version service application are ready.</p>
+
+<h3 id="deploying-the-client-and-the-ambassador">Deploying The Client and The Ambassador</h3>
+
+<p>For the ambassador, we will use nginx as a load balancer this time and not as a web server. This is done by changing the nginx configuration. Once again, we will store the nginx configuration in a file and pass it to the pod using a ConfigMap. Here is the <code class="language-plaintext highlighter-rouge">nginx.conf</code> file I used:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">worker_processes</span><span class="w"> </span><span class="mi">5</span><span class="err">;</span><span class="w">
+</span><span class="err">worker_rlimit_nofile</span><span class="w"> </span><span class="mi">8192</span><span class="err">;</span><span class="w">
+
+</span><span class="err">events</span><span class="w"> </span><span class="p">{</span><span class="w">
+  </span><span class="err">worker_connections</span><span class="w"> </span><span class="mi">1024</span><span class="err">;</span><span class="w">
+</span><span class="p">}</span><span class="w">
+
+</span><span class="err">http</span><span class="w"> </span><span class="p">{</span><span class="w">
+  </span><span class="err">upstream</span><span class="w"> </span><span class="err">backend</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="err">server</span><span class="w"> </span><span class="err">nginx-prod</span><span class="w"> </span><span class="err">weight=</span><span class="mi">8</span><span class="err">;</span><span class="w">
+    </span><span class="err">server</span><span class="w"> </span><span class="err">nginx-exp;</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+
+  </span><span class="err">server</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="err">listen</span><span class="w"> </span><span class="mi">80</span><span class="err">;</span><span class="w">
+    </span><span class="err">location</span><span class="w"> </span><span class="err">/</span><span class="w"> </span><span class="p">{</span><span class="w">
+      </span><span class="err">proxy_pass</span><span class="w"> </span><span class="err">http://backend;</span><span class="w">
+    </span><span class="p">}</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>Notice that the name of the servers correspond to the name of the services we created (which in turn is inherited from the name of the deployment in our case).</p>
+
+<p>Now, we will create a Pod consisting of two containers: the nginx ambassador and a client that we will use to request the home page of our service application with <code class="language-plaintext highlighter-rouge">curl</code> commands. Here’s how the Pod manifest file looks like:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">apiVersion</span><span class="pi">:</span> <span class="s">v1</span>
+<span class="na">kind</span><span class="pi">:</span> <span class="s">Pod</span>
+<span class="na">metadata</span><span class="pi">:</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">ambassador-pattern</span>
+<span class="na">spec</span><span class="pi">:</span>
+  <span class="na">containers</span><span class="pi">:</span>
+  <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">nginx</span>
+    <span class="na">image</span><span class="pi">:</span> <span class="s">nginx</span>
+    <span class="na">volumeMounts</span><span class="pi">:</span>
+    <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">config-volume</span>
+      <span class="na">mountPath</span><span class="pi">:</span> <span class="s">/etc/nginx</span>
+    <span class="na">securityContext</span><span class="pi">:</span>
+      <span class="na">privileged</span><span class="pi">:</span> <span class="no">true</span>
+  <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">debug</span>
+    <span class="na">image</span><span class="pi">:</span> <span class="s">fabriziopandini/debug</span>
+  <span class="na">volumes</span><span class="pi">:</span>
+  <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">config-volume</span>
+    <span class="na">configMap</span><span class="pi">:</span>
+      <span class="na">name</span><span class="pi">:</span> <span class="s">nginx-conf</span>
+</code></pre></div></div>
+
+<p>Save it to <code class="language-plaintext highlighter-rouge">ambassador.yaml</code> and create it with <code class="language-plaintext highlighter-rouge">kubectl create -f ambassador.yaml</code>. Once running, log into the debug container shell and enter the <code class="language-plaintext highlighter-rouge">curl localhost:80</code> command, or simply use <code class="language-plaintext highlighter-rouge">kubectl exec</code> as in the below example. 80% of the time you should see <em>This is your NGINX Production</em> in the response, and the remaining 20% of the responses should be <em>This is your NGINX Experiment</em>.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>kubectl <span class="nb">exec </span>ambassador-pattern <span class="nt">-c</span> debug <span class="nt">--</span> curl localhost:80
+&lt;<span class="o">!</span>DOCTYPE html&gt;
+&lt;html&gt;
+&lt;<span class="nb">head</span><span class="o">&gt;</span>
+&lt;title&gt;Welcome to nginx!&lt;/title&gt;
+&lt;style&gt;
+    body <span class="o">{</span>
+        width: 35em<span class="p">;</span>
+        margin: 0 auto<span class="p">;</span>
+        font-family: Tahoma, Verdana, Arial, sans-serif<span class="p">;</span>
+    <span class="o">}</span>
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;h1&gt;This is your NGINX Production&lt;/h1&gt;
+
+&lt;p&gt;For online documentation and support please refer to
+&lt;a <span class="nv">href</span><span class="o">=</span><span class="s2">"http://nginx.org/"</span><span class="o">&gt;</span>nginx.org&lt;/a&gt;.&lt;br/&gt;
+Commercial support is available at
+&lt;a <span class="nv">href</span><span class="o">=</span><span class="s2">"http://nginx.com/"</span><span class="o">&gt;</span>nginx.com&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;Thank you <span class="k">for </span>using nginx.&lt;/em&gt;&lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+
+<span class="nv">$ </span>kubectl <span class="nb">exec </span>ambassador-pattern <span class="nt">-c</span> debug <span class="nt">--</span> curl localhost:80
+&lt;<span class="o">!</span>DOCTYPE html&gt;
+&lt;html&gt;
+&lt;<span class="nb">head</span><span class="o">&gt;</span>
+&lt;title&gt;Welcome to nginx!&lt;/title&gt;
+&lt;style&gt;
+    body <span class="o">{</span>
+        width: 35em<span class="p">;</span>
+        margin: 0 auto<span class="p">;</span>
+        font-family: Tahoma, Verdana, Arial, sans-serif<span class="p">;</span>
+    <span class="o">}</span>
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;h1&gt;This is your NGINX Experiment&lt;/h1&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre></div></div>
+
+<h3 id="summary">Summary</h3>
+
+<p>In this post we used ambassador pattern to split requests between two versions of a service. We deployed the ambassador container at the client side with the client container in the same pod. This allows them to share the network namespace and communicate via localhost.</p>
+
+:ET

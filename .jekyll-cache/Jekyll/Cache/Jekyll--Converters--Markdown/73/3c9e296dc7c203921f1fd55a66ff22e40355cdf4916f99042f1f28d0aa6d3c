@@ -1,0 +1,276 @@
+I"BT<p>Creating a Kubernetes cluster on baremetal (e.g. using tools like kubeadm) consists of an initialization command followed by creating some directories and copying some files. When successfully completed, your CLI client <em>kubectl</em> used to interact with the cluster is auto-magically configured and ready to connect to the cluster. If you use managed clusters on public cloud, configuring <em>kubectl</em> is usually a single command. Behind the scenes of this configuration a lot of work is done.</p>
+
+<p><code class="language-plaintext highlighter-rouge">kubectl</code> is a CLI client that can be used to manage multiple <abbr title="Kubernetes">k8s</abbr> clusters. Commands are sent as API requests to the cluster API server, which authenticates and authorizes them before passing them to the controller responsible of handling the kind of received request.</p>
+
+<p>In this post, we will explore the details of how <code class="language-plaintext highlighter-rouge">kubectl</code> commands are authenticated. We will also create a new external user and authorize its access to the cluster using <abbr title="Role-Based Access Control">RBAC</abbr>. <em>The commands output is based on a minikube  installation. The values in your output will be slightly different if you are using a baremetal or a managed <abbr title="Kubernetes">k8s</abbr> cluster.</em></p>
+
+<hr />
+
+<p><code class="language-plaintext highlighter-rouge">Kubectl</code> uses a configuration file, known as <em>kubeconfig</em>, which contains an element called <em>context</em> [1][2]. The <em>context</em> is defined by three parameters:</p>
+
+<ul>
+  <li><strong>cluster name</strong> of the cluster to be used</li>
+  <li><strong>namespace (optional)</strong> can be used to limit the cluster’s access to a particular namespace</li>
+  <li><strong>user</strong> on behalf of whom <abbr title="Kubernetes">k8s</abbr> resources and objects are manipulated</li>
+</ul>
+
+<p>When the cluster’s API server receives a request, the request’s user - defined in the context - gets authenticated. Then, the authorization process checks if the user  has the permission to carry the requested operation.</p>
+
+<blockquote>
+  <p>Users in Kubernetes can be of two types: end or normal users managed outside Kubernetes (we will call them external), and service account users managed by Kubernetes API [3].</p>
+</blockquote>
+
+<p>Clusters initialization scripts like <code class="language-plaintext highlighter-rouge">kubeadm</code> write (or instruct you to place) the kubeconfig file in a subdirectory (more precisely  <code class="language-plaintext highlighter-rouge">.kube</code> directory) of the home directory of the logged in user on the master node where the script was launched. By default, <code class="language-plaintext highlighter-rouge">kubectl</code> looks for its config file in this specific subdirectory of the logged user. Therefore, the config file must be copied to the home directory of each Linux/system user who needs to access the cluster. Those scripts also define a default user to access the cluster.</p>
+
+<blockquote>
+  <p>Do not confuse the user that <abbr title="Kubernetes">k8s</abbr> authenticates and is defined in the context with the user used by kubectl to locate kubeconfig. They may or may not be the same.</p>
+</blockquote>
+
+<p>The following commands can be used to get information about  the contexts and users. The default user here is called <em>minikube</em>.</p>
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># To check the current context</span>
+<span class="nv">$ </span>kubectl config current-context
+minikube
+
+<span class="c"># To list contexts, the * indicates the current context</span>
+<span class="nv">$ </span>kubectl config get-contexts
+CURRENT   NAME            CLUSTER    AUTHINFO   NAMESPACE
+<span class="k">*</span>         minikube        minikube   minikube   
+
+<span class="c"># To see the context details: user, cluster, namespace</span>
+<span class="nv">$ </span>kubectl config view <span class="nt">--output</span><span class="o">=</span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.contexts[?(@.name=="minikube")]}'</span>
+map[context:map[cluster:minikube user:minikube] name:minikube]
+
+<span class="c"># To view the entire default config, explained in more details later</span>
+<span class="nv">$ </span>kubectl config view
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: <span class="nv">$HOME</span>/.minikube/ca.crt
+    server: https://192.168.99.100:8443
+  name: minikube
+contexts:
+- context:
+    cluster: minikube
+    user: minikube
+  name: minikube
+current-context: minikube
+kind: Config
+preferences: <span class="o">{}</span>
+<span class="nb">users</span>:
+- name: minikube   <span class="c"># default user</span>
+  user:
+    client-certificate: <span class="nv">$HOME</span>/.minikube/client.crt
+    client-key: <span class="nv">$HOME</span>/.minikube/client.key
+</code></pre></div></div>
+<h2 id="configuring-access-of-a-new-user">Configuring Access of a New User</h2>
+<p>Imagine that we have a database administrator who needs to manage databases instances on a <abbr title="Kubernetes">k8s</abbr> cluster.  However, we do not want him to see what other people / roles are doing on the cluster. For this, we will create a new namespace and call it <code class="language-plaintext highlighter-rouge">databases</code>. We will then create a new external (normal) user, call him <code class="language-plaintext highlighter-rouge">DbUser</code>, and allow him to access only the <code class="language-plaintext highlighter-rouge">databases</code> namespace.</p>
+
+<p>Assuming that the namespace exists or has been created, the process consists of the following steps:</p>
+
+<ol>
+  <li>Create a user (or use an existing one).</li>
+  <li>Generate public/private keypair and certificates.</li>
+  <li>Update the kubeconfig file to reference the newly keypair and certificates.</li>
+  <li>Define a new context referencing the user, namespace and targeted cluster.<br />
+After this step, <em>kubeconfig</em> is properly configured to give kubectl the appropriate information it needs to use in the the API requests. But the cluster has no information about the created user and is not yet able to authorize its requests. In other words, we have solved the authentication, but we still need to solve the authorization. This is why we still need to:</li>
+  <li>Create <abbr title="Role-Based Access Control">RBAC</abbr> Role and RoleBinding to define the user’s permissions.</li>
+</ol>
+
+<h4 id="step-1-create-a-user">Step 1: Create a User</h4>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># Create a new user</span>
+<span class="nv">$ </span><span class="nb">sudo </span>useradd <span class="nt">-s</span> /bin/bash DbUser
+
+<span class="c"># Set the password</span>
+<span class="nv">$ </span><span class="nb">sudo </span>passwd DbUser
+Enter new UNIX password:
+Retype new UNIX password:
+passwd: password updated successfully
+</code></pre></div></div>
+
+<h4 id="step-2-generate-users-keys-and-certificates">Step 2: Generate user’s keys and certificates</h4>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># Create a private key</span>
+<span class="nv">$ </span>openssl genrsa <span class="nt">-out</span> DbUser.key 2048
+Generating RSA private key, 2048 bit long modulus
+......+++
+.........+++
+e is 65537 <span class="o">(</span>0x10001<span class="o">)</span>
+
+<span class="c"># Generate a Certificate Signing Request (CSR) using the created key</span>
+<span class="nv">$ </span>openssl req <span class="nt">-new</span> <span class="nt">-key</span> DbUser.key <span class="se">\</span>
+<span class="nt">-out</span> DbUser.csr <span class="nt">-subj</span> <span class="s2">"/CN=DbUser"</span>
+
+<span class="c"># Generate a self-signed certificate using the CSR</span>
+<span class="nv">$ </span><span class="nb">sudo </span>openssl x509 <span class="nt">-req</span> <span class="nt">-in</span> DbUser.csr <span class="se">\</span>
+<span class="nt">-CA</span> /etc/kubernetes/pki/ca.crt <span class="se">\</span>
+<span class="nt">-CAkey</span> /etc/kubernetes/pki/ca.key <span class="se">\</span>
+<span class="nt">-CAcreateserial</span> <span class="se">\</span>
+<span class="nt">-out</span> DbUser.crt <span class="nt">-days</span> 45
+
+Signature ok
+<span class="nv">subject</span><span class="o">=</span>/CN<span class="o">=</span>DbUser
+Getting CA Private Key
+</code></pre></div></div>
+
+<p>If you look back at the default config file, the keys and certs of the default user (minikube) are placed in the <code class="language-plaintext highlighter-rouge">~/.minikube</code> subdirectory. It may be a good idea to copy the new files of DbUser (DbUser.key and DbUser.crt) in the same directory.</p>
+
+<h4 id="step-3-and-4-update-the-kubeconfig-file">Step 3 and 4: Update the kubeconfig file</h4>
+
+<p>Before doing any modifications, it is useful to review the default configuration with <code class="language-plaintext highlighter-rouge">kubectl config view</code>. The output looks like:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: <span class="nv">$HOME</span>/.minikube/ca.crt
+    server: https://192.168.99.100:8443
+  name: minikube    <span class="c"># name of the cluster</span>
+contexts:
+- context: 			<span class="c"># default context defined by minikube</span>
+    cluster: minikube
+    user: minikube
+  name: minikube
+current-context: minikube
+kind: Config
+preferences: <span class="o">{}</span>
+<span class="nb">users</span>:
+- name: minikube
+  user:  			<span class="c"># user credentials</span>
+    client-certificate: <span class="nv">$HOME</span>/.minikube/client.crt
+    client-key: <span class="nv">$HOME</span>/.minikube/client.key
+</code></pre></div></div>
+
+<p>This command is the equivalent of displaying the kubeconfig file with <code class="language-plaintext highlighter-rouge">cat ~/.kube/config</code>. The above output is from a minikube installation. If you are using any other type of installation the output must be similar with different values. <code class="language-plaintext highlighter-rouge">$HOME</code> will be replaced with the absolute path to your home directory.</p>
+
+<p>Note the name of the cluster for later use, that is <code class="language-plaintext highlighter-rouge">minikube</code> in our case (see the line with a comment). You can also copy/backup this file if you want to refer to in later.</p>
+
+<p>To add the user credentials and define a new context, enter the following commands.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># Check the different options of kubectl config set-credentials</span>
+<span class="c"># by adding the flag -h.</span>
+<span class="c"># Place the certs and keys in a safe directory and use the path</span>
+<span class="c"># to replace "path_to".</span>
+<span class="c"># Add the user and credentials to the kubeconfig file</span>
+<span class="nv">$ </span>kubectl config set-credentials DbUser <span class="se">\</span>
+<span class="nt">--client-certificate</span><span class="o">=</span>/path_to/DbUser.crt <span class="se">\</span>
+<span class="nt">--client-key</span><span class="o">=</span>/path_to/DbUser.key
+
+<span class="c"># add a new context for the new user in kubeconfig</span>
+<span class="nv">$ </span>kubectl config set-context DB-context <span class="se">\</span>
+<span class="nt">--cluster</span><span class="o">=</span>minikube <span class="se">\</span>
+<span class="nt">--namespace</span><span class="o">=</span>databases <span class="se">\</span>
+<span class="nt">--user</span><span class="o">=</span>DbUser
+Context <span class="s2">"DB-context"</span> created.
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">--cluster=minikube</code> sets the name of the targeted cluster to <em>minikube</em> and <code class="language-plaintext highlighter-rouge">--namespace=databases</code> sets <em>databases</em> as the namespace of this context, where the user is granted access. You can omit the namespace argument if you want to define a cluster-wide access.</p>
+
+<p>To verify the modifications you can use the following commands:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># list available contexts</span>
+<span class="nv">$ </span>kubectl config get-contexts
+CURRENT   NAME            CLUSTER    AUTHINFO   NAMESPACE
+          DB-context      minikube   DbUser     databases
+<span class="k">*</span>         minikube        minikube   minikube   
+
+
+<span class="c"># try to use the new context to access cluster resources. You should not be allowed.</span>
+<span class="nv">$ </span>kubectl <span class="nt">--context</span><span class="o">=</span>DB-context get pods
+Error from server <span class="o">(</span>Forbidden<span class="o">)</span>: pods is forbidden: User <span class="s2">"DbUser"</span>
+cannot list pods <span class="k">in </span>the namespace <span class="s2">"databases"</span>
+</code></pre></div></div>
+
+<p>We will fix the ‘forbidden’ error in step 5.</p>
+
+<p>This is how the kubeconfig file looks after adding the new context and user credentials (you can compare it with the original one):</p>
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: <span class="nv">$HOME</span>/.minikube/ca.crt
+    server: https://192.168.99.100:8443
+  name: minikube
+contexts:
+- context:
+    cluster: minikube
+    namespace: databases
+    user: DbUser
+  name: DB-context
+- context:
+    cluster: minikube
+    user: minikube
+  name: minikube
+current-context: minikube
+kind: Config
+preferences: <span class="o">{}</span>
+<span class="nb">users</span>:
+- name: DbUser
+  user:
+    client-certificate: <span class="nv">$HOME</span>/.minikube/DbUser.crt
+    client-key: <span class="nv">$HOME</span>/.minikube/DbUser.key
+- name: minikube
+  user:
+    client-certificate: <span class="nv">$HOME</span>/.minikube/client.crt
+    client-key: <span class="nv">$HOME</span>/.minikube/client.key
+</code></pre></div></div>
+<h4 id="step-5-create-rbac-objects">Step 5: Create <abbr title="Role-Based Access Control">RBAC</abbr> objects</h4>
+
+<p>First, we will create a role called <em>dbuser</em> in the <em>databases</em> namespace we defined earlier in the context. We will assign full capabilities (all operations) on <em>deployments</em>, <em>replicasets</em>, and <em>pods</em>. Create a file in your working directory with the following content. Let’s say I named this file <em>dbrole.yaml</em>.</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">kind</span><span class="pi">:</span> <span class="s">Role</span>
+<span class="na">apiVersion</span><span class="pi">:</span> <span class="s">rbac.authorization.k8s.io/v1beta1</span>
+<span class="na">metadata</span><span class="pi">:</span>
+  <span class="na">namespace</span><span class="pi">:</span> <span class="s">databases</span>  <span class="c1"># Same namespace as the one in the context</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">dbuser</span>
+<span class="na">rules</span><span class="pi">:</span>
+<span class="pi">-</span> <span class="na">apiGroups</span><span class="pi">:</span> <span class="pi">[</span><span class="s2">"</span><span class="s">"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">extensions"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">apps"</span><span class="pi">]</span>
+  <span class="na">resources</span><span class="pi">:</span> <span class="pi">[</span><span class="s2">"</span><span class="s">deployments"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">replicasets"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">pods"</span><span class="pi">]</span>
+  <span class="na">verbs</span><span class="pi">:</span> <span class="pi">[</span><span class="s2">"</span><span class="s">get"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">list"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">watch"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">create"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">update"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">patch"</span><span class="pi">,</span> <span class="s2">"</span><span class="s">delete"</span><span class="pi">]</span> <span class="c1"># You can also use ["*"]</span>
+</code></pre></div></div>
+
+<p>Create the role with <code class="language-plaintext highlighter-rouge">kubectl apply -f dbrole.yaml</code>.</p>
+
+<p>Next, we need to create a role binding to assign our user to the role we just created. Create a file <em>dbrole-binding.yaml</em> with the following content:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">kind</span><span class="pi">:</span> <span class="s">RoleBinding</span>
+<span class="na">apiVersion</span><span class="pi">:</span> <span class="s">rbac.authorization.k8s.io/v1beta1</span>
+<span class="na">metadata</span><span class="pi">:</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">dbuser-role-binding</span>
+  <span class="na">namespace</span><span class="pi">:</span> <span class="s">databases</span>
+<span class="na">subjects</span><span class="pi">:</span>
+<span class="pi">-</span> <span class="na">kind</span><span class="pi">:</span> <span class="s">User</span>      <span class="c1"># Here we say it's a normal user and not a service account</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">DbUser</span>  <span class="c1"># Here is where we define the user we created and defined in the context</span>
+  <span class="na">apiGroup</span><span class="pi">:</span> <span class="s2">"</span><span class="s">"</span>
+<span class="na">roleRef</span><span class="pi">:</span>
+  <span class="na">kind</span><span class="pi">:</span> <span class="s">Role</span>
+  <span class="na">name</span><span class="pi">:</span> <span class="s">dbuser</span>
+  <span class="na">apiGroup</span><span class="pi">:</span> <span class="s2">"</span><span class="s">"</span>
+</code></pre></div></div>
+
+<p>Create the role binding with <code class="language-plaintext highlighter-rouge">kubectl apply -f dbrole-binding.yaml</code>.</p>
+
+<p>Now if you test again with <code class="language-plaintext highlighter-rouge">kubectl --context=DB-context get pods</code>, you should not be denied from viewing pods for example. However, you may get <code class="language-plaintext highlighter-rouge">no resources found</code> if nothing is running on the cluster. Try to create pods or deployments in the databases namespace and list them.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># Create a deployment of mongoDB</span>
+<span class="nv">$ </span>kubectl run mongo <span class="nt">--image</span><span class="o">=</span>mongo <span class="nt">--context</span><span class="o">=</span>DB-context <span class="nt">-n</span> databases
+deployment.apps/mongo created
+<span class="c"># List all deployments in the namespace</span>
+<span class="nv">$ </span>kubectl get deployments <span class="nt">--context</span><span class="o">=</span>DB-context <span class="nt">-n</span> databases
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+mongo   1/1     1            1           108s
+
+<span class="c"># List all pods in the namespace</span>
+<span class="nv">$ </span>kubectl get pods <span class="nt">--context</span><span class="o">=</span>DB-context <span class="nt">-n</span> databases
+NAME                     READY   STATUS    RESTARTS   AGE
+mongo-845fdc5c7b-2x7zz   1/1     Running   0          2m37s
+</code></pre></div></div>
+
+<h3 id="summary">Summary</h3>
+<p>We have successfully configured an additional external user to access a Kubernetes cluster. Setting a context and a user in kubeconfig allows the user to get authenticated but does not give the user any permission on the cluster. An additional step of creating <abbr title="Role-Based Access Control">RBAC</abbr> objects (role and role binding) was required to assign the appropriate permissions. For the curious, you can play around with the verbs of the role, add more namespaces, etc.</p>
+
+<h3 id="references">References</h3>
+
+<p>[1] <a href="https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/#context">https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/#context</a><br />
+[2] <a href="https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-context-and-configuration">https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-context-and-configuration</a><br />
+[3] <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/#users-in-kubernetes">https://kubernetes.io/docs/reference/access-authn-authz/authentication/#users-in-kubernetes</a></p>
+
+:ET

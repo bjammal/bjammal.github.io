@@ -134,7 +134,7 @@ This is currently one of the most important and used groups of the API. Here you
 
 Here is a screenshot from the [kubectl cheat sheet](https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-output-verbosity-and-debugging) that explains those levels. The needed verbosity level can be passed on the command's argument `--v`.
 
-![kubectl verbose levels](/img/kubectl-verbose.png)
+![kubectl verbose levels](../images/kubectl-verbose.png)
 
  Let's try to use this mode with level 8 while requesting the list of services in the default namespace. The output below is formatted for readability, expect some more text on your terminal.
 

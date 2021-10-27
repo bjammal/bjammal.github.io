@@ -1,0 +1,349 @@
+I"T�<p>In the previous <a href="https://bjammal.github.io/2019-05-28-kubernetes-cluster-access/">post</a>, I showed how you can configure kubectl to authenticate to the Kubernetes API server with an external (system) user. I also mentioned that <code class="language-plaintext highlighter-rouge">kubectl</code> is only a CLI client that communicates with the API server using HTTP REST requests. In this post I want to show how we can explore the API and interact with it by sending REST requests without using kubectl.</p>
+
+<h3 id="api-versioning">API Versioning</h3>
+
+<p>The <abbr title="Kubernetes">k8s</abbr> <a href="https://kubernetes.io/docs/concepts/overview/kubernetes-api/">documentation</a> provides an extensive explanation of the versioning system the community uses for the API.</p>
+
+<blockquote>
+  <p>Kubernetes supports multiple API versions, each at a different API path, such as <code class="language-plaintext highlighter-rouge">/api/v1</code> or <code class="language-plaintext highlighter-rouge">/apis/extensions/v1beta1</code></p>
+</blockquote>
+
+<p>In other words, the version is at the API group level (groups are explained in the next section). As the documentation states, different API versions imply different stability and support levels that are summarized as follows:</p>
+
+<ul>
+  <li>Alpha level:<br />
+The version names contain <code class="language-plaintext highlighter-rouge">alpha</code> (e.g. <code class="language-plaintext highlighter-rouge">v1alpha1</code>). Resources of the groups having this version may contain bugs. This version is disabled by default. Changes to the API of this level may happen in a non-backward compatible way and the support for feature may be dropped at any time without notice.</li>
+  <li>Beta level:<br />
+The version names contain <code class="language-plaintext highlighter-rouge">beta</code> (e.g. <code class="language-plaintext highlighter-rouge">v2beta3</code>). In this level, code is well tested and enabling the feature is considered safe, which is why it is enabled by default. Support for the overall feature will not be dropped, though details may change.</li>
+  <li>Stable level:<br />
+The version name is <code class="language-plaintext highlighter-rouge">vX</code> where <code class="language-plaintext highlighter-rouge">X</code> is an integer. Stable versions of features will appear in released software for many subsequent versions.</li>
+</ul>
+
+<p>Please refer to the <a href="https://kubernetes.io/docs/concepts/overview/kubernetes-api/">docs</a> for detailed information.</p>
+
+<h3 id="api-groups">API Groups</h3>
+
+<p>The first and easiest way to get more information about the API that <abbr title="Kubernetes">k8s</abbr> exposes is to run the <code class="language-plaintext highlighter-rouge">curl https://&lt;serverip&gt;:&lt;port&gt;/apis -k</code> command. You can get the ip address and port of your API server by running <code class="language-plaintext highlighter-rouge">kubectl cluster-info</code>.  The API is organized in groups of endpoints to make the development and extension of each group independent. A group can be specified in two ways:</p>
+
+<ul>
+  <li>in a REST path (URL) following the pattern <code class="language-plaintext highlighter-rouge">/apis/$GROUP_NAME/$VERSION</code></li>
+  <li>in an <code class="language-plaintext highlighter-rouge">apiVersion</code> field of a serialized object (YAML manifest files are serialized to JSON as we will see later) following the pattern <code class="language-plaintext highlighter-rouge">$GROUP_NAME/$VERSION</code></li>
+</ul>
+
+<blockquote>
+  <p><abbr title="Kubernetes">k8s</abbr> <a href="https://kubernetes.io/docs/reference/using-api/api-overview/">documentation</a>: “The named groups are at REST path <code class="language-plaintext highlighter-rouge">/apis/$GROUP_NAME/$VERSION</code>, and use <code class="language-plaintext highlighter-rouge">apiVersion: $GROUP_NAME/$VERSION</code> (for example, <code class="language-plaintext highlighter-rouge">apiVersion: batch/v1</code>).”</p>
+</blockquote>
+
+<p>If you examine the output of the previous <code class="language-plaintext highlighter-rouge">curl</code> command, you can see a list of groups started by the key “groups”.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>user@k8s-master<span class="nv">$ </span>curl https://127.0.0.1:6443/apis <span class="nt">-k</span>
+<span class="o">{</span>
+  <span class="s2">"kind"</span>: <span class="s2">"APIGroupList"</span>,
+  <span class="s2">"apiVersion"</span>: <span class="s2">"v1"</span>,
+  <span class="s2">"groups"</span>: <span class="o">[</span>
+    <span class="o">{</span>
+      <span class="s2">"name"</span>: <span class="s2">"apiregistration.k8s.io"</span>,
+      <span class="s2">"versions"</span>: <span class="o">[</span>
+        <span class="o">{</span>
+          <span class="s2">"groupVersion"</span>: <span class="s2">"apiregistration.k8s.io/v1"</span>,
+          <span class="s2">"version"</span>: <span class="s2">"v1"</span>
+        <span class="o">}</span>,
+        <span class="o">{</span>
+          <span class="s2">"groupVersion"</span>: <span class="s2">"apiregistration.k8s.io/v1beta1"</span>,
+          <span class="s2">"version"</span>: <span class="s2">"v1beta1"</span>
+        <span class="o">}</span>
+      <span class="o">]</span>,
+      <span class="s2">"preferredVersion"</span>: <span class="o">{</span>
+        <span class="s2">"groupVersion"</span>: <span class="s2">"apiregistration.k8s.io/v1"</span>,
+        <span class="s2">"version"</span>: <span class="s2">"v1"</span>
+      <span class="o">}</span>
+    <span class="o">}</span>,
+    <span class="o">{</span>
+      <span class="s2">"name"</span>: <span class="s2">"extensions"</span>,
+      <span class="s2">"versions"</span>: <span class="o">[</span>
+        <span class="o">{</span>
+          <span class="s2">"groupVersion"</span>: <span class="s2">"extensions/v1beta1"</span>,
+          <span class="s2">"version"</span>: <span class="s2">"v1beta1"</span>
+        <span class="o">}</span>
+      <span class="o">]</span>,
+      <span class="s2">"preferredVersion"</span>: <span class="o">{</span>
+        <span class="s2">"groupVersion"</span>: <span class="s2">"extensions/v1beta1"</span>,
+      <span class="o">}</span>
+    <span class="o">}</span>,
+... output omitted ...
+</code></pre></div></div>
+
+<p>Note that even if the API server is exposed over HTTPS, we were able to bypass the server certificate verification (i.e with the <code class="language-plaintext highlighter-rouge">curl</code> -k flag).</p>
+
+<p>So, if you need to get more information about the set of endpoints that a specific group includes, you can issue the same previous <code class="language-plaintext highlighter-rouge">curl</code> command with the appropriate URL path. For instance, to see what the <code class="language-plaintext highlighter-rouge">v1beta1</code> version of the <code class="language-plaintext highlighter-rouge">extensions</code> group contains:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>user@k8s-master<span class="nv">$ </span>curl https://127.0.0.1:6443/apis/extensions/v1beta1 <span class="nt">-k</span>
+<span class="o">{</span>
+  <span class="s2">"kind"</span>: <span class="s2">"APIResourceList"</span>,
+  <span class="s2">"groupVersion"</span>: <span class="s2">"extensions/v1beta1"</span>,
+  <span class="s2">"resources"</span>: <span class="o">[</span>
+    <span class="o">{</span>
+      <span class="s2">"name"</span>: <span class="s2">"daemonsets"</span>,
+      <span class="s2">"singularName"</span>: <span class="s2">""</span>,
+      <span class="s2">"namespaced"</span>: <span class="nb">true</span>,
+      <span class="s2">"kind"</span>: <span class="s2">"DaemonSet"</span>,
+      <span class="s2">"verbs"</span>: <span class="o">[</span>
+        <span class="s2">"create"</span>,
+        <span class="s2">"delete"</span>,
+        <span class="s2">"deletecollection"</span>,
+        <span class="s2">"get"</span>,
+        <span class="s2">"list"</span>,
+        <span class="s2">"patch"</span>,
+        <span class="s2">"update"</span>,
+        <span class="s2">"watch"</span>
+      <span class="o">]</span>,
+      <span class="s2">"shortNames"</span>: <span class="o">[</span>
+        <span class="s2">"ds"</span>
+      <span class="o">]</span>
+    <span class="o">}</span>,
+... output omitted ...
+    <span class="o">{</span>
+      <span class="s2">"name"</span>: <span class="s2">"deployments"</span>,
+      <span class="s2">"singularName"</span>: <span class="s2">""</span>,
+      <span class="s2">"namespaced"</span>: <span class="nb">true</span>,
+      <span class="s2">"kind"</span>: <span class="s2">"Deployment"</span>,
+      <span class="s2">"verbs"</span>: <span class="o">[</span>
+        <span class="s2">"create"</span>,
+        <span class="s2">"delete"</span>,
+        <span class="s2">"deletecollection"</span>,
+        <span class="s2">"get"</span>,
+        <span class="s2">"list"</span>,
+        <span class="s2">"patch"</span>,
+        <span class="s2">"update"</span>,
+        <span class="s2">"watch"</span>
+      <span class="o">]</span>,
+      <span class="s2">"shortNames"</span>: <span class="o">[</span>
+        <span class="s2">"deploy"</span>
+      <span class="o">]</span>
+    <span class="o">}</span>,
+... output omitted ...
+</code></pre></div></div>
+
+<p>This is currently one of the most important and used groups of the API. Here you can see resources endpoints like DaemonSet , Deployment, Ingress, ReplicaSet, and so on. Navigate through the different groups and resources, check their names, the associated actions, short names, and other information as you like.</p>
+
+<h3 id="kubectl-verbose-mode">Kubectl Verbose Mode</h3>
+
+<p><code class="language-plaintext highlighter-rouge">kubectl</code> provides a <em>verbose</em> mode with different levels that allow us to understand what it is doing on our behalf and show us more detailed output which can be useful in case of debugging. This means that we can use this mode to get information about the HTTP REST requests that <code class="language-plaintext highlighter-rouge">kubectl</code> sends to get and update cluster resources.</p>
+
+<p>Here is a screenshot from the <a href="https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-output-verbosity-and-debugging">kubectl cheat sheet</a> that explains those levels. The needed verbosity level can be passed on the command’s argument <code class="language-plaintext highlighter-rouge">--v</code>.</p>
+
+<p><img src="../images/kubectl-verbose.png" alt="kubectl verbose levels" /></p>
+
+<p>Let’s try to use this mode with level 8 while requesting the list of services in the default namespace. The output below is formatted for readability, expect some more text on your terminal.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># Get a list of services in the default namespace</span>
+user@k8s-master<span class="nv">$ </span>kubectl <span class="nt">--v</span><span class="o">=</span>8 get svc
+... output omitted ...
+GET https://127.0.0.1:6443/api/v1/namespaces/default/services?limit<span class="o">=</span>500
+... output omitted ...
+Response Status: 200 OK <span class="k">in </span>29 milliseconds
+... output omitted ...
+Response Body: <span class="o">{</span><span class="s2">"kind"</span>:<span class="s2">"ServiceList"</span>,<span class="s2">"apiVersion"</span>:<span class="s2">"v1"</span>,<span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/default/services"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"22058"</span><span class="o">}</span>,<span class="s2">"items"</span>:[<span class="o">{</span><span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"name"</span>:<span class="s2">"kubernetes"</span>,<span class="s2">"namespace"</span>:<span class="s2">"default"</span>,<span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/default/services/kubernetes"</span>,<span class="s2">"uid"</span>:<span class="s2">"81e11bfb-9c39-11e9-8ede-42010a9a0046"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"33"</span>,<span class="s2">"creationTimestamp"</span>:<span class="s2">"2019-07-01T19:50:41Z"</span>,<span class="s2">"labels"</span>:<span class="o">{</span><span class="s2">"component"</span>:<span class="s2">"apiserver"</span>,<span class="s2">"provider"</span>:<span class="s2">"kubernetes"</span><span class="o">}}</span>,<span class="s2">"spec"</span>:<span class="o">{</span><span class="s2">"ports"</span>:[<span class="o">{</span><span class="s2">"name"</span>:<span class="s2">"https"</span>,<span class="s2">"protocol"</span>:<span class="s2">"TCP"</span>,<span class="s2">"port"</span>:443,<span class="s2">"targetPort"</span>:443<span class="o">}]</span>,<span class="s2">"clusterIP"</span>:<span class="s2">"10.55.240.1"</span>,<span class="s2">"type"</span>:<span class="s2">"ClusterIP"</span>,<span class="s2">"sessionAffinity"</span>:<span class="s2">"None"</span><span class="o">}</span>,<span class="s2">"status"</span>:<span class="o">{</span><span class="s2">"loadBalancer"</span>:<span class="o">{}}}]}</span>
+... output omitted ...
+NAME         TYPE        CLUSTER-IP    EXTERNAL-IP   PORT<span class="o">(</span>S<span class="o">)</span>   AGE
+kubernetes   ClusterIP   10.55.240.1   &lt;none&gt;        443/TCP   2h
+
+<span class="c"># Get a list of services in the kube-system namespace</span>
+user@k8s-master<span class="nv">$ </span>kubectl <span class="nt">--v</span><span class="o">=</span>8 get svc <span class="nt">-n</span> kube-system
+GET https://127.0.0.1:6443/api/v1/namespaces/kube-system/services?limit<span class="o">=</span>500
+... output omitted ...
+Response Status: 200 OK <span class="k">in </span>162 milliseconds
+... output omitted ...
+Response Body: <span class="o">{</span><span class="s2">"kind"</span>:<span class="s2">"ServiceList"</span>,<span class="s2">"apiVersion"</span>:<span class="s2">"v1"</span>,<span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/kube-system/services"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"22395"</span><span class="o">}</span>,<span class="s2">"items"</span>:[<span class="o">{</span><span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"name"</span>:<span class="s2">"default-http-backend"</span>,<span class="s2">"namespace"</span>:<span class="s2">"kube-system"</span>,<span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/kube-system/services/default-http-backend"</span>,<span class="s2">"uid"</span>:<span class="s2">"a7441324-9c39-11e9-b164-42010a9a0046"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"326"</span>,<span class="s2">"creationTimestamp"</span>:<span class="s2">"2019-07-01T19:51:44Z"</span>,<span class="s2">"labels"</span>:<span class="o">{</span><span class="s2">"addonmanager.kubernetes.io/mode"</span>:<span class="s2">"Reconcile"</span>,<span class="s2">"k8s-app"</span>:<span class="s2">"glbc"</span>,<span class="s2">"kubernetes.io/cluster-service"</span>:<span class="s2">"true"</span>,<span class="s2">"kubernetes.io/name"</span>:<span class="s2">"GLBCDefaultBackend"</span><span class="o">}</span>,<span class="s2">"annotations"</span>:<span class="o">{</span><span class="s2">"kubectl.kubernetes.io/last-applied-configuration"</span>:<span class="s2">"{</span><span class="se">\"</span><span class="s2">apiVersion</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">v1</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">kind</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">Service</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">metadata</span><span class="se">\"</span><span class="s2">:{</span><span class="se">\"</span><span class="s2">annotations</span><span class="se">\"</span><span class="s2">:{},</span><span class="se">\"</span><span class="s2">labels</span><span class="se">\"</span><span class="s2">:{</span><span class="se">\"</span><span class="s2">addonmanager.kubernetes.io/mode</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">Reconcile</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">k8s-app</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">glbc</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">kubernetes.io/cluster-service</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">true</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">kubernetes.io/name</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">GLBCDefaultBackend</span><span class="se">\"</span><span class="s2">},</span><span class="se">\"</span><span class="s2">name</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">default-http-backend</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">namespace</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">kube-system</span><span class="se">\"</span><span class="s2">},</span><span class="se">\"</span><span class="s2">spec</span><span class="se">\"</span><span class="s2">:{</span><span class="se">\"</span><span class="s2">ports</span><span class="se">\"</span><span class="s2">:[{</span><span class="se">\"</span><span class="s2">name</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">http</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">port</span><span class="se">\"</span><span class="s2">:80,</span><span class="se">\"</span><span class="s2">protocol</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">TCP</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">targetPort</span><span class="se">\"</span><span class="s2">:808 [truncated 2409 chars]
+... output omitted ...
+NAME                   TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+default-http-backend   NodePort    10.55.240.10   &lt;none&gt;        80:30077/TCP   2h
+heapster               ClusterIP   10.55.248.97   &lt;none&gt;        80/TCP         2h
+metrics-server         ClusterIP   10.55.249.81   &lt;none&gt;        443/TCP        2h
+</span></code></pre></div></div>
+
+<p>Verbosity level 8 shows us the HTTP request like GET requests and the URL of the API which includes the group, version, and targeted resource. It also shows the response status and body. If the response body is so long like in the case of the second command above, the response body will be truncated.</p>
+
+<p>In contrast, the verbosity level 9 shown next allows us to see not only the HTTP request, but also the <code class="language-plaintext highlighter-rouge">curl</code> command <code class="language-plaintext highlighter-rouge">kubectl</code> used to send the request. Moreover, the response body would not be truncated at this level.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>user@k8s-master<span class="nv">$ </span>kubectl <span class="nt">--v</span><span class="o">=</span>9 get pods
+... output omitted ...
+curl <span class="nt">-k</span> <span class="nt">-v</span> <span class="nt">-XGET</span>  <span class="nt">-H</span> <span class="s2">"Accept: application/json"</span> <span class="nt">-H</span> <span class="s2">"User-Agent: kubectl/v1.10.4 (linux/amd64) kubernetes/5ca598b"</span> https://127.0.0.1:6443/api/v1/namespaces/default/pods?limit<span class="o">=</span>500
+
+GET https://127.0.0.1:6443/api/v1/namespaces/default/pods?limit<span class="o">=</span>500 200 OK <span class="k">in </span>257 milliseconds
+
+... output omitted ...
+Response Body: <span class="o">{</span><span class="s2">"kind"</span>:<span class="s2">"PodList"</span>,<span class="s2">"apiVersion"</span>:<span class="s2">"v1"</span>,<span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/default/pods"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"14451"</span><span class="o">}</span>,<span class="s2">"items"</span>:[]<span class="o">}</span>
+No resources found.
+
+user@k8s-master<span class="nv">$ </span>kubectl <span class="nt">--v</span><span class="o">=</span>9 get svc
+... output omitted ...
+curl <span class="nt">-k</span> <span class="nt">-v</span> <span class="nt">-XGET</span>  <span class="nt">-H</span> <span class="s2">"Accept: application/json"</span> <span class="nt">-H</span> <span class="s2">"User-Agent: kubectl/v1.10.4 (linux/amd64) kubernetes/5ca598b"</span> https://127.0.0.1:6443/api/v1/namespaces/default/services?limit<span class="o">=</span>500
+
+GET https://127.0.0.1:6443/api/v1/namespaces/default/services?limit<span class="o">=</span>500 200 OK <span class="k">in </span>88 milliseconds
+
+... output omitted ...
+Response Body: <span class="o">{</span><span class="s2">"kind"</span>:<span class="s2">"ServiceList"</span>,<span class="s2">"apiVersion"</span>:<span class="s2">"v1"</span>,<span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/default/services"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"16103"</span><span class="o">}</span>,<span class="s2">"items"</span>:[<span class="o">{</span><span class="s2">"metadata"</span>:<span class="o">{</span><span class="s2">"name"</span>:<span class="s2">"kubernetes"</span>,<span class="s2">"namespace"</span>:<span class="s2">"default"</span>,<span class="s2">"selfLink"</span>:<span class="s2">"/api/v1/namespaces/default/services/kubernetes"</span>,<span class="s2">"uid"</span>:<span class="s2">"81e11bfb-9c39-11e9-8ede-42010a9a0046"</span>,<span class="s2">"resourceVersion"</span>:<span class="s2">"33"</span>,<span class="s2">"creationTimestamp"</span>:<span class="s2">"2019-07-01T19:50:41Z"</span>,<span class="s2">"labels"</span>:<span class="o">{</span><span class="s2">"component"</span>:<span class="s2">"apiserver"</span>,<span class="s2">"provider"</span>:<span class="s2">"kubernetes"</span><span class="o">}}</span>,<span class="s2">"spec"</span>:<span class="o">{</span><span class="s2">"ports"</span>:[<span class="o">{</span><span class="s2">"name"</span>:<span class="s2">"https"</span>,<span class="s2">"protocol"</span>:<span class="s2">"TCP"</span>,<span class="s2">"port"</span>:443,<span class="s2">"targetPort"</span>:443<span class="o">}]</span>,<span class="s2">"clusterIP"</span>:<span class="s2">"10.55.240.1"</span>,<span class="s2">"type"</span>:<span class="s2">"ClusterIP"</span>,<span class="s2">"sessionAffinity"</span>:<span class="s2">"None"</span><span class="o">}</span>,<span class="s2">"status"</span>:<span class="o">{</span><span class="s2">"loadBalancer"</span>:<span class="o">{}}}]}</span>
+... output omitted ...
+NAME         TYPE        CLUSTER-IP    EXTERNAL-IP   PORT<span class="o">(</span>S<span class="o">)</span>   AGE
+kubernetes   ClusterIP   10.55.240.1   &lt;none&gt;        443/TCP   1h
+</code></pre></div></div>
+
+<p>You can also take a moment to check the URLs of the GET requests and see if you can extract the API group and <code class="language-plaintext highlighter-rouge">apiVersion</code>.  It is also worth noting that the curl commands <code class="language-plaintext highlighter-rouge">kubectl</code> uses specifies in their header that they only accept JSON format. This JSON formatted reponse body is then processed by kubectl and printed to you in a pretty format.</p>
+
+<h3 id="kubectl-is-just-easier">Kubectl is Just Easier</h3>
+
+<p>At this point, you know where to find the underlying <code class="language-plaintext highlighter-rouge">curl</code> command used by <code class="language-plaintext highlighter-rouge">kubectl</code> and the HTTP REST requests it sends to the <abbr title="Kubernetes">k8s</abbr> RESTful API. You can use this information to do the same job as <code class="language-plaintext highlighter-rouge">kubectl</code> with other client (e.g. Postman). Basically, with <code class="language-plaintext highlighter-rouge">curl</code> you can use any of the <a href="https://tools.ietf.org/html/rfc7231#section-4">HTTP verbs</a> to manage resources. Also, you now know how to navigate the API groups. Some resources support additional verbs provided by <abbr title="Kubernetes">k8s</abbr> as you can see if you look back at the second listing in the <em>API Groups</em> section and spot the following lines:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nl">"verbs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+        </span><span class="s2">"create"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"delete"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"deletecollection"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"get"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"list"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"patch"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"update"</span><span class="p">,</span><span class="w">
+        </span><span class="s2">"watch"</span><span class="w">
+      </span><span class="p">]</span><span class="w">
+</span></code></pre></div></div>
+
+<p>So, <code class="language-plaintext highlighter-rouge">kubectl</code> is an easy and convenient tool that facilitate our tasks, but nothing should prevent you from using <code class="language-plaintext highlighter-rouge">curl</code> to create, get, or update <abbr title="Kubernetes">k8s</abbr> objects and resources directly. Oh, maybe one thing could stop you: AUTHENTICATION.</p>
+
+<p>For a cluster that uses X509 client certs (which is the case of minikube used in the following examples), you can find the keys and certs files using <code class="language-plaintext highlighter-rouge">kubectl config view</code>, as I showed in the previous post. Then, you can  pass those certs as arguments to the <code class="language-plaintext highlighter-rouge">curl</code> commands in order to authenticate your requests with the <abbr title="Kubernetes">k8s</abbr> API server. For example, if you have a pod called busybox and you want to get the logs of this pod, the equivalent of <code class="language-plaintext highlighter-rouge">kubectl logs busybox</code> is (supposing that your files are in /tmp) :</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>user@k8s-master<span class="nv">$ </span>curl <span class="nt">--cert</span> /tmp/client.pem <span class="nt">--key</span> /tmp/client-key.pem <span class="se">\</span>
+<span class="nt">--cacert</span> /tmp/ca.pem <span class="nt">-v</span> <span class="nt">-XGET</span> https://127.0.0.1:6443/api/v1/namespaces/default/pods/busybox/log
+</code></pre></div></div>
+
+<p>Some examples of other calls you can make:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>GET /api/v1/namespaces/<span class="o">{</span>namespace<span class="o">}</span>/pods/<span class="o">{</span>name<span class="o">}</span>/exec
+GET /api/v1/namespaces/<span class="o">{</span>namespace<span class="o">}</span>/pods/<span class="o">{</span>name<span class="o">}</span>/log
+GET /api/v1/watch/namespaces/<span class="o">{</span>namespace<span class="o">}</span>/pods/<span class="o">{</span>name<span class="o">}</span>
+</code></pre></div></div>
+
+<p>You may be thinking that getting resources is easy, but creating resources is also possible. Let’s try to create a busybox pod, starting by creating a file named <code class="language-plaintext highlighter-rouge">busypod.json</code> with the following content:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+   </span><span class="nl">"kind"</span><span class="p">:</span><span class="s2">"Pod"</span><span class="p">,</span><span class="w">
+   </span><span class="nl">"apiVersion"</span><span class="p">:</span><span class="s2">"v1"</span><span class="p">,</span><span class="w">
+   </span><span class="nl">"metadata"</span><span class="p">:{</span><span class="w">
+      </span><span class="nl">"name"</span><span class="p">:</span><span class="s2">"busypod"</span><span class="p">,</span><span class="w">
+      </span><span class="nl">"namespace"</span><span class="p">:</span><span class="s2">"default"</span><span class="p">,</span><span class="w">
+      </span><span class="nl">"labels"</span><span class="p">:{</span><span class="w">
+         </span><span class="nl">"name"</span><span class="p">:</span><span class="s2">"examplepod"</span><span class="w">
+      </span><span class="p">}</span><span class="w">
+   </span><span class="p">},</span><span class="w">
+   </span><span class="nl">"spec"</span><span class="p">:{</span><span class="w">
+      </span><span class="nl">"containers"</span><span class="p">:[</span><span class="w">
+         </span><span class="p">{</span><span class="w">
+            </span><span class="nl">"name"</span><span class="p">:</span><span class="s2">"busybox"</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"image"</span><span class="p">:</span><span class="s2">"busybox"</span><span class="p">,</span><span class="w">
+            </span><span class="nl">"command"</span><span class="p">:[</span><span class="s2">"sleep"</span><span class="p">,</span><span class="w"> </span><span class="s2">"3600"</span><span class="p">]</span><span class="w">
+         </span><span class="p">}</span><span class="w">
+      </span><span class="p">]</span><span class="w">
+   </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>This file is the equivalent of a YAML file. We did it in JSON because it is easier when working with <code class="language-plaintext highlighter-rouge">curl</code>. In fact, as we saw earlier,  <code class="language-plaintext highlighter-rouge">kubectl</code>  translates the YAML files into JSON format when calling the API server. Then, enter the following curl command. Notice that we are using a POST HTTP method and not GET.</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>curl <span class="nt">--cert</span> &lt;path_to&gt;/client.crt <span class="nt">--key</span> &lt;path_to&gt;/client.key <span class="nt">--cacert</span> &lt;path_to&gt;/ca.crt https://192.168.99.100:6443/api/v1/namespaces/default/pods <span class="nt">-XPOST</span> <span class="nt">-H</span><span class="s1">'Content-Type: application/json'</span> <span class="nt">-d</span>@busypod.json
+<span class="o">{</span>
+  <span class="s2">"kind"</span>: <span class="s2">"Pod"</span>,
+  <span class="s2">"apiVersion"</span>: <span class="s2">"v1"</span>,
+  <span class="s2">"metadata"</span>: <span class="o">{</span>
+    <span class="s2">"name"</span>: <span class="s2">"busypod"</span>,
+    <span class="s2">"namespace"</span>: <span class="s2">"default"</span>,
+    <span class="s2">"selfLink"</span>: <span class="s2">"/api/v1/namespaces/default/pods/busypod"</span>,
+    <span class="s2">"uid"</span>: <span class="s2">"a7ab3c0e-9d08-11e9-8f57-0800275e9471"</span>,
+    <span class="s2">"resourceVersion"</span>: <span class="s2">"99053"</span>,
+    <span class="s2">"creationTimestamp"</span>: <span class="s2">"2019-07-02T20:33:30Z"</span>,
+    <span class="s2">"labels"</span>: <span class="o">{</span>
+      <span class="s2">"name"</span>: <span class="s2">"examplepod"</span>
+    <span class="o">}</span>
+  <span class="o">}</span>,
+  <span class="s2">"spec"</span>: <span class="o">{</span>
+    <span class="s2">"volumes"</span>: <span class="o">[</span>
+      <span class="o">{</span>
+        <span class="s2">"name"</span>: <span class="s2">"default-token-njddp"</span>,
+        <span class="s2">"secret"</span>: <span class="o">{</span>
+          <span class="s2">"secretName"</span>: <span class="s2">"default-token-njddp"</span>,
+          <span class="s2">"defaultMode"</span>: 420
+        <span class="o">}</span>
+      <span class="o">}</span>
+    <span class="o">]</span>,
+    <span class="s2">"containers"</span>: <span class="o">[</span>
+      <span class="o">{</span>
+        <span class="s2">"name"</span>: <span class="s2">"busybox"</span>,
+        <span class="s2">"image"</span>: <span class="s2">"busybox"</span>,
+        <span class="s2">"command"</span>: <span class="o">[</span>
+          <span class="s2">"sleep"</span>,
+          <span class="s2">"3600"</span>
+        <span class="o">]</span>,
+        <span class="s2">"resources"</span>: <span class="o">{</span>
+
+        <span class="o">}</span>,
+        <span class="s2">"volumeMounts"</span>: <span class="o">[</span>
+          <span class="o">{</span>
+            <span class="s2">"name"</span>: <span class="s2">"default-token-njddp"</span>,
+            <span class="s2">"readOnly"</span>: <span class="nb">true</span>,
+            <span class="s2">"mountPath"</span>: <span class="s2">"/var/run/secrets/kubernetes.io/serviceaccount"</span>
+          <span class="o">}</span>
+        <span class="o">]</span>,
+        <span class="s2">"terminationMessagePath"</span>: <span class="s2">"/dev/termination-log"</span>,
+        <span class="s2">"terminationMessagePolicy"</span>: <span class="s2">"File"</span>,
+        <span class="s2">"imagePullPolicy"</span>: <span class="s2">"Always"</span>
+      <span class="o">}</span>
+    <span class="o">]</span>,
+    <span class="s2">"restartPolicy"</span>: <span class="s2">"Always"</span>,
+    <span class="s2">"terminationGracePeriodSeconds"</span>: 30,
+    <span class="s2">"dnsPolicy"</span>: <span class="s2">"ClusterFirst"</span>,
+    <span class="s2">"serviceAccountName"</span>: <span class="s2">"default"</span>,
+    <span class="s2">"serviceAccount"</span>: <span class="s2">"default"</span>,
+    <span class="s2">"securityContext"</span>: <span class="o">{</span>
+
+    <span class="o">}</span>,
+    <span class="s2">"schedulerName"</span>: <span class="s2">"default-scheduler"</span>,
+    <span class="s2">"tolerations"</span>: <span class="o">[</span>
+      <span class="o">{</span>
+        <span class="s2">"key"</span>: <span class="s2">"node.kubernetes.io/not-ready"</span>,
+        <span class="s2">"operator"</span>: <span class="s2">"Exists"</span>,
+        <span class="s2">"effect"</span>: <span class="s2">"NoExecute"</span>,
+        <span class="s2">"tolerationSeconds"</span>: 300
+      <span class="o">}</span>,
+      <span class="o">{</span>
+        <span class="s2">"key"</span>: <span class="s2">"node.kubernetes.io/unreachable"</span>,
+        <span class="s2">"operator"</span>: <span class="s2">"Exists"</span>,
+        <span class="s2">"effect"</span>: <span class="s2">"NoExecute"</span>,
+        <span class="s2">"tolerationSeconds"</span>: 300
+      <span class="o">}</span>
+    <span class="o">]</span>,
+    <span class="s2">"priority"</span>: 0,
+    <span class="s2">"enableServiceLinks"</span>: <span class="nb">true</span>
+  <span class="o">}</span>,
+  <span class="s2">"status"</span>: <span class="o">{</span>
+    <span class="s2">"phase"</span>: <span class="s2">"Pending"</span>,
+    <span class="s2">"qosClass"</span>: <span class="s2">"BestEffort"</span>
+  <span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+
+<p>Check if the pod has been created:</p>
+
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$ </span>kubectl get pods
+NAME         READY     STATUS    RESTARTS   AGE
+busypod      1/1       Running   0          31s
+</code></pre></div></div>
+
+<p>If you are using a managed Kubernetes cluster from a public cloud provider, the authentication method may be different. The commands then need to be adapted accordingly.</p>
+
+<h3 id="summary">Summary</h3>
+
+<p>This post demystified the Kubernetes API and showed how you can manage Kubernetes cluster resources with a client different than kubectl.</p>
+
+<h3 id="additional-resources">Additional Resources</h3>
+
+<p><a href="https://medium.com/@nieldw/curling-the-kubernetes-api-server-d7675cfc398c">https://medium.com/@nieldw/curling-the-kubernetes-api-server-d7675cfc398c</a></p>
+
+:ET
